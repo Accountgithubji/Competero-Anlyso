@@ -1,168 +1,196 @@
 /**
- * In-memory database with optional file persistence.
- * - In development: persists to .local-db/ JSON files on disk
- * - In production/serverless: uses in-memory store (data resets on cold start)
+ * Database adapter — Upstash Redis (production) or in-memory (local dev)
  *
- * This means the frontend and backend run in the same Next.js process —
- * no separate backend deployment needed.
+ * Production (Vercel + Upstash):
+ *   Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in Vercel env vars.
+ *   Data persists across deployments and serverless cold starts.
+ *
+ * Local dev (no Upstash env vars):
+ *   Falls back to in-memory store + .local-db/ JSON files on disk.
+ *
+ * Collections stored in Redis as JSON strings under key: "col:{name}"
+ * Each collection is a JSON array of documents.
  */
 
-import fs from 'fs';
+// ── Upstash Redis ──────────────────────────────────────────────────────────────
+let redis = null;
+
+function getRedis() {
+  if (redis) return redis;
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+
+  // Lazy import so the module doesn't crash when the package isn't installed
+  const { Redis } = require('@upstash/redis');
+  redis = new Redis({ url, token });
+  return redis;
+}
+
+// ── Local fallback (in-memory + disk) ─────────────────────────────────────────
+import fs   from 'fs';
 import path from 'path';
 
-const IS_DEV = process.env.NODE_ENV !== 'production';
-const DB_DIR = path.join(process.cwd(), '.local-db');
+const DB_DIR     = path.join(process.cwd(), '.local-db');
+const memStore   = global.__localDb || (global.__localDb = {});
 
-// Global in-memory store — survives hot reloads in dev, persists across requests
-const globalStore = global.__localDb || (global.__localDb = {});
-
-function loadCollection(name) {
-  // Already in memory
-  if (globalStore[name]) return globalStore[name];
-
-  // Try loading from disk in dev
-  if (IS_DEV) {
-    const filePath = path.join(DB_DIR, `${name}.json`);
-    if (fs.existsSync(filePath)) {
-      try {
-        globalStore[name] = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        return globalStore[name];
-      } catch (e) {
-        console.error(`[localDb] Error loading ${name}:`, e.message);
-      }
-    }
+function localLoad(name) {
+  if (memStore[name]) return memStore[name];
+  const file = path.join(DB_DIR, `${name}.json`);
+  if (fs.existsSync(file)) {
+    try { memStore[name] = JSON.parse(fs.readFileSync(file, 'utf-8')); return memStore[name]; }
+    catch (e) { console.error('[db] load error', name, e.message); }
   }
-
-  globalStore[name] = [];
-  return globalStore[name];
+  memStore[name] = [];
+  return memStore[name];
 }
 
-function saveCollection(name, data) {
-  globalStore[name] = data;
-
-  // Persist to disk in dev
-  if (IS_DEV) {
-    try {
-      if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-      fs.writeFileSync(path.join(DB_DIR, `${name}.json`), JSON.stringify(data, null, 2), 'utf-8');
-    } catch (e) {
-      console.error(`[localDb] Error saving ${name}:`, e.message);
-    }
-  }
+function localSave(name, data) {
+  memStore[name] = data;
+  try {
+    if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DB_DIR, `${name}.json`), JSON.stringify(data, null, 2));
+  } catch (e) { console.error('[db] save error', name, e.message); }
 }
 
-function matchesQuery(item, query) {
-  for (const [key, value] of Object.entries(query)) {
-    if (item[key] !== value) return false;
+// ── Shared helpers ─────────────────────────────────────────────────────────────
+function matches(item, query) {
+  for (const [k, v] of Object.entries(query)) {
+    if (item[k] !== v) return false;
   }
   return true;
 }
 
-function sortData(data, sortObj) {
-  const sorted = [...data];
-  for (const [key, order] of Object.entries(sortObj)) {
-    sorted.sort((a, b) =>
-      order === -1 ? (b[key] ?? 0) - (a[key] ?? 0) : (a[key] ?? 0) - (b[key] ?? 0)
-    );
+function applySort(data, sortObj) {
+  const out = [...data];
+  for (const [k, order] of Object.entries(sortObj)) {
+    out.sort((a, b) => order === -1 ? (b[k] ?? 0) - (a[k] ?? 0) : (a[k] ?? 0) - (b[k] ?? 0));
   }
-  return sorted;
+  return out;
 }
 
-function generateId() {
+function genId() {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
+// ── Collection class ───────────────────────────────────────────────────────────
 class Collection {
-  constructor(name) {
-    this.name = name;
+  constructor(name) { this.name = name; }
+
+  // Load full collection array from Redis or local
+  async _load() {
+    const r = getRedis();
+    if (r) {
+      try {
+        const raw = await r.get(`col:${this.name}`);
+        if (!raw) return [];
+        return typeof raw === 'string' ? JSON.parse(raw) : raw;
+      } catch (e) {
+        console.error('[db] Redis load error', this.name, e.message);
+        return [];
+      }
+    }
+    return localLoad(this.name);
+  }
+
+  // Save full collection array to Redis or local
+  async _save(data) {
+    const r = getRedis();
+    if (r) {
+      try {
+        await r.set(`col:${this.name}`, JSON.stringify(data));
+      } catch (e) {
+        console.error('[db] Redis save error', this.name, e.message);
+      }
+      return;
+    }
+    localSave(this.name, data);
   }
 
   find(query = {}) {
-    const name = this.name;
+    const col = this;
     const result = {
       _query: query,
-      _sort: null,
-      sort(sortObj) { this._sort = sortObj; return this; },
-      toArray() {
-        let data = loadCollection(name);
-        data = data.filter(item => matchesQuery(item, result._query));
-        if (result._sort) data = sortData(data, result._sort);
+      _sort:  null,
+      sort(s) { this._sort = s; return this; },
+      async toArray() {
+        let data = await col._load();
+        data = data.filter(item => matches(item, result._query));
+        if (result._sort) data = applySort(data, result._sort);
         return data;
       }
     };
     return result;
   }
 
-  findOne(query = {}) {
-    const data = loadCollection(this.name);
-    return data.find(item => matchesQuery(item, query)) || null;
+  async findOne(query = {}) {
+    const data = await this._load();
+    return data.find(item => matches(item, query)) || null;
   }
 
-  insertOne(doc) {
-    const data = loadCollection(this.name);
-    const newDoc = { _id: generateId(), ...doc };
+  async insertOne(doc) {
+    const data = await this._load();
+    const newDoc = { _id: genId(), ...doc };
     data.push(newDoc);
-    saveCollection(this.name, data);
+    await this._save(data);
     return { insertedId: newDoc._id };
   }
 
-  insertMany(docs) {
-    const data = loadCollection(this.name);
-    const newDocs = docs.map(doc => ({ _id: doc._id || generateId(), ...doc }));
+  async insertMany(docs) {
+    const data = await this._load();
+    const newDocs = docs.map(d => ({ _id: d._id || genId(), ...d }));
     data.push(...newDocs);
-    saveCollection(this.name, data);
+    await this._save(data);
     return { insertedCount: newDocs.length };
   }
 
-  updateOne(query, update, options = {}) {
-    const data = loadCollection(this.name);
-    const index = data.findIndex(item => matchesQuery(item, query));
-    const setData = update.$set !== undefined ? update.$set : update;
+  async updateOne(query, update, options = {}) {
+    const data  = await this._load();
+    const index = data.findIndex(item => matches(item, query));
+    const set   = update.$set !== undefined ? update.$set : update;
 
     if (index !== -1) {
-      data[index] = { ...data[index], ...setData };
-      saveCollection(this.name, data);
+      data[index] = { ...data[index], ...set };
+      await this._save(data);
       return { modifiedCount: 1, upsertedId: null };
-    } else if (options.upsert) {
-      const newId = query._id !== undefined ? query._id : generateId();
-      const newDoc = { _id: newId, ...setData };
-      data.push(newDoc);
-      saveCollection(this.name, data);
+    }
+    if (options.upsert) {
+      const newId  = query._id !== undefined ? query._id : genId();
+      data.push({ _id: newId, ...set });
+      await this._save(data);
       return { modifiedCount: 0, upsertedId: newId };
     }
     return { modifiedCount: 0, upsertedId: null };
   }
 
-  deleteMany(query = {}) {
-    const data = loadCollection(this.name);
-    const kept = data.filter(item => !matchesQuery(item, query));
-    const deletedCount = data.length - kept.length;
-    saveCollection(this.name, kept);
-    return { deletedCount };
+  async deleteMany(query = {}) {
+    const data  = await this._load();
+    const kept  = data.filter(item => !matches(item, query));
+    await this._save(kept);
+    return { deletedCount: data.length - kept.length };
   }
 
-  deleteOne(query = {}) {
-    const data = loadCollection(this.name);
-    const index = data.findIndex(item => matchesQuery(item, query));
+  async deleteOne(query = {}) {
+    const data  = await this._load();
+    const index = data.findIndex(item => matches(item, query));
     if (index !== -1) {
       data.splice(index, 1);
-      saveCollection(this.name, data);
+      await this._save(data);
       return { deletedCount: 1 };
     }
     return { deletedCount: 0 };
   }
 }
 
-class LocalDatabase {
-  collection(name) {
-    return new Collection(name);
-  }
+// ── Database class ─────────────────────────────────────────────────────────────
+class Database {
+  collection(name) { return new Collection(name); }
 }
 
-const dbInstance = new LocalDatabase();
+const dbInstance = new Database();
 
 export async function getDb() {
   return dbInstance;
 }
 
-export default LocalDatabase;
+export default Database;
