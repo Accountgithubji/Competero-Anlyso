@@ -1,149 +1,167 @@
+/**
+ * In-memory database with optional file persistence.
+ * - In development: persists to .local-db/ JSON files on disk
+ * - In production/serverless: uses in-memory store (data resets on cold start)
+ *
+ * This means the frontend and backend run in the same Next.js process —
+ * no separate backend deployment needed.
+ */
+
 import fs from 'fs';
 import path from 'path';
 
+const IS_DEV = process.env.NODE_ENV !== 'production';
 const DB_DIR = path.join(process.cwd(), '.local-db');
 
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
-}
+// Global in-memory store — survives hot reloads in dev, persists across requests
+const globalStore = global.__localDb || (global.__localDb = {});
 
-class LocalDatabase {
-  getCollectionPath(name) {
-    return path.join(DB_DIR, `${name}.json`);
-  }
+function loadCollection(name) {
+  // Already in memory
+  if (globalStore[name]) return globalStore[name];
 
-  loadCollection(name) {
-    const filePath = this.getCollectionPath(name);
+  // Try loading from disk in dev
+  if (IS_DEV) {
+    const filePath = path.join(DB_DIR, `${name}.json`);
     if (fs.existsSync(filePath)) {
       try {
-        return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        globalStore[name] = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        return globalStore[name];
       } catch (e) {
         console.error(`[localDb] Error loading ${name}:`, e.message);
-        return [];
       }
     }
-    return [];
   }
 
-  saveCollection(name, data) {
+  globalStore[name] = [];
+  return globalStore[name];
+}
+
+function saveCollection(name, data) {
+  globalStore[name] = data;
+
+  // Persist to disk in dev
+  if (IS_DEV) {
     try {
-      fs.writeFileSync(this.getCollectionPath(name), JSON.stringify(data, null, 2), 'utf-8');
+      if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+      fs.writeFileSync(path.join(DB_DIR, `${name}.json`), JSON.stringify(data, null, 2), 'utf-8');
     } catch (e) {
       console.error(`[localDb] Error saving ${name}:`, e.message);
     }
   }
+}
 
-  matchesQuery(item, query) {
-    for (const [key, value] of Object.entries(query)) {
-      if (item[key] !== value) return false;
-    }
-    return true;
+function matchesQuery(item, query) {
+  for (const [key, value] of Object.entries(query)) {
+    if (item[key] !== value) return false;
+  }
+  return true;
+}
+
+function sortData(data, sortObj) {
+  const sorted = [...data];
+  for (const [key, order] of Object.entries(sortObj)) {
+    sorted.sort((a, b) =>
+      order === -1 ? (b[key] ?? 0) - (a[key] ?? 0) : (a[key] ?? 0) - (b[key] ?? 0)
+    );
+  }
+  return sorted;
+}
+
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+class Collection {
+  constructor(name) {
+    this.name = name;
   }
 
-  sortData(data, sortObj) {
-    const sorted = [...data];
-    for (const [key, order] of Object.entries(sortObj)) {
-      sorted.sort((a, b) => order === -1 ? (b[key] ?? 0) - (a[key] ?? 0) : (a[key] ?? 0) - (b[key] ?? 0));
-    }
-    return sorted;
-  }
-
-  generateId() {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  collection(name) {
-    const self = this;
-
-    return {
-      find(query = {}) {
-        const result = {
-          _query: query,
-          _sort: null,
-          sort(sortObj) {
-            this._sort = sortObj;
-            return this;
-          },
-          toArray() {
-            let data = self.loadCollection(name);
-            data = data.filter(item => self.matchesQuery(item, result._query));
-            if (result._sort) data = self.sortData(data, result._sort);
-            return data;
-          }
-        };
-        return result;
-      },
-
-      findOne(query = {}) {
-        const data = self.loadCollection(name);
-        return data.find(item => self.matchesQuery(item, query)) || null;
-      },
-
-      insertOne(doc) {
-        const data = self.loadCollection(name);
-        const newDoc = { _id: self.generateId(), ...doc };
-        data.push(newDoc);
-        self.saveCollection(name, data);
-        return { insertedId: newDoc._id };
-      },
-
-      insertMany(docs) {
-        const data = self.loadCollection(name);
-        const newDocs = docs.map(doc => ({ _id: doc._id || self.generateId(), ...doc }));
-        data.push(...newDocs);
-        self.saveCollection(name, data);
-        return { insertedCount: newDocs.length };
-      },
-
-      updateOne(query, update, options = {}) {
-        const data = self.loadCollection(name);
-        const index = data.findIndex(item => self.matchesQuery(item, query));
-        const setData = update.$set !== undefined ? update.$set : update;
-
-        if (index !== -1) {
-          // Preserve existing _id, merge with new data
-          data[index] = { ...data[index], ...setData };
-          self.saveCollection(name, data);
-          return { modifiedCount: 1, upsertedId: null };
-        } else if (options.upsert) {
-          // Use _id from query if present, otherwise generate one
-          const newId = query._id !== undefined ? query._id : self.generateId();
-          const newDoc = { _id: newId, ...setData };
-          data.push(newDoc);
-          self.saveCollection(name, data);
-          return { modifiedCount: 0, upsertedId: newId };
-        }
-        return { modifiedCount: 0, upsertedId: null };
-      },
-
-      deleteMany(query = {}) {
-        const data = self.loadCollection(name);
-        const kept = data.filter(item => !self.matchesQuery(item, query));
-        const deletedCount = data.length - kept.length;
-        self.saveCollection(name, kept);
-        return { deletedCount };
-      },
-
-      deleteOne(query = {}) {
-        const data = self.loadCollection(name);
-        const index = data.findIndex(item => self.matchesQuery(item, query));
-        if (index !== -1) {
-          data.splice(index, 1);
-          self.saveCollection(name, data);
-          return { deletedCount: 1 };
-        }
-        return { deletedCount: 0 };
-      },
+  find(query = {}) {
+    const name = this.name;
+    const result = {
+      _query: query,
+      _sort: null,
+      sort(sortObj) { this._sort = sortObj; return this; },
+      toArray() {
+        let data = loadCollection(name);
+        data = data.filter(item => matchesQuery(item, result._query));
+        if (result._sort) data = sortData(data, result._sort);
+        return data;
+      }
     };
+    return result;
+  }
+
+  findOne(query = {}) {
+    const data = loadCollection(this.name);
+    return data.find(item => matchesQuery(item, query)) || null;
+  }
+
+  insertOne(doc) {
+    const data = loadCollection(this.name);
+    const newDoc = { _id: generateId(), ...doc };
+    data.push(newDoc);
+    saveCollection(this.name, data);
+    return { insertedId: newDoc._id };
+  }
+
+  insertMany(docs) {
+    const data = loadCollection(this.name);
+    const newDocs = docs.map(doc => ({ _id: doc._id || generateId(), ...doc }));
+    data.push(...newDocs);
+    saveCollection(this.name, data);
+    return { insertedCount: newDocs.length };
+  }
+
+  updateOne(query, update, options = {}) {
+    const data = loadCollection(this.name);
+    const index = data.findIndex(item => matchesQuery(item, query));
+    const setData = update.$set !== undefined ? update.$set : update;
+
+    if (index !== -1) {
+      data[index] = { ...data[index], ...setData };
+      saveCollection(this.name, data);
+      return { modifiedCount: 1, upsertedId: null };
+    } else if (options.upsert) {
+      const newId = query._id !== undefined ? query._id : generateId();
+      const newDoc = { _id: newId, ...setData };
+      data.push(newDoc);
+      saveCollection(this.name, data);
+      return { modifiedCount: 0, upsertedId: newId };
+    }
+    return { modifiedCount: 0, upsertedId: null };
+  }
+
+  deleteMany(query = {}) {
+    const data = loadCollection(this.name);
+    const kept = data.filter(item => !matchesQuery(item, query));
+    const deletedCount = data.length - kept.length;
+    saveCollection(this.name, kept);
+    return { deletedCount };
+  }
+
+  deleteOne(query = {}) {
+    const data = loadCollection(this.name);
+    const index = data.findIndex(item => matchesQuery(item, query));
+    if (index !== -1) {
+      data.splice(index, 1);
+      saveCollection(this.name, data);
+      return { deletedCount: 1 };
+    }
+    return { deletedCount: 0 };
   }
 }
 
-let dbInstance = null;
+class LocalDatabase {
+  collection(name) {
+    return new Collection(name);
+  }
+}
+
+const dbInstance = new LocalDatabase();
 
 export async function getDb() {
-  if (!dbInstance) {
-    dbInstance = new LocalDatabase();
-  }
   return dbInstance;
 }
 
