@@ -6,7 +6,9 @@
         "dev": "next dev --hostname 0.0.0.0 --port 3000",
         "build": "next build",
         "start": "next start",
-        "lint": "next lint"
+        "lint": "next lint",
+        "setup:upstash": "node scripts/setup-upstash.js",
+        "setup:upstash:fetch": "node scripts/fetch-upstash-env.js"
     },
     "dependencies": {
         "@hookform/resolvers": "^5.1.1",
