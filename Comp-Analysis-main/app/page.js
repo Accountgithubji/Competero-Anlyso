@@ -66,8 +66,6 @@ export default function App() {
 
   useEffect(() => {
     (async () => { setLoading(true); await Promise.all([fetchDashboard(), fetchVideos('all')]); setLoading(false); })();
-    const id = setInterval(() => { handleSync(true); }, 60 * 60 * 1000);
-    return () => clearInterval(id);
   }, []);
 
   useEffect(() => { fetchVideos(filter); }, [filter, fetchVideos]);
