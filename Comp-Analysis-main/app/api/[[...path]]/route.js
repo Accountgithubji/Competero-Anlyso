@@ -5,10 +5,48 @@ import { getDb } from '@/lib/localDb';
 import { v4 as uuidv4 } from 'uuid';
 
 const YT_KEY = process.env.YOUTUBE_API_KEY;
-const HANDLES = (process.env.TRACKED_HANDLES || '').split(',').map(s => s.trim()).filter(Boolean);
-const OWN_HANDLES = (process.env.OWN_HANDLES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-const NICHE = process.env.CHANNEL_NICHE || '';
-const isOwnHandle = (h) => OWN_HANDLES.includes((h || '').toLowerCase());
+
+// ===== Multi-Niche Configuration =====
+const NICHE_CONFIGS = {
+  neet: {
+    slug: 'neet',
+    label: 'NEET Counselling',
+    collectionPrefix: 'neet_',
+    niche: 'NEET Medical Counselling & AYUSH Admissions',
+    trackedHandles: (
+      process.env.NEET_TRACKED_HANDLES ||
+      process.env.TRACKED_HANDLES ||
+      '@collegekaka,@OmEducareServices,@MedicaWing,@SparkupClasses,@GarimaGoelBiology,@dr.anandmani,@Mentorbox,@AddaNEETCounselling,@vidyaneetadda247'
+    ).split(',').map(s => s.trim()).filter(Boolean),
+    ownHandles: (
+      process.env.NEET_OWN_HANDLES ||
+      process.env.OWN_HANDLES ||
+      '@AddaNEETCounselling,@vidyaneetadda247'
+    ).split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  },
+  cuet: {
+    slug: 'cuet',
+    label: 'CUET Preparation',
+    collectionPrefix: 'cuet_',
+    niche: 'CUET UG Preparation & College Admissions',
+    trackedHandles: (
+      process.env.CUET_TRACKED_HANDLES ||
+      '@CUETWallahPW,@jhoombaba22,@dubuddy,@houseOfambitions,@khushankmathur,@basicsiksha,@Malviyaacademy1.0,@AryanKher06,@Careers360,@University_Updates,@CUETAdda247,@humanitiesadda247,@CommerceAddaclass12,@ScienceAdda247'
+    ).split(',').map(s => s.trim()).filter(Boolean),
+    ownHandles: (
+      process.env.CUET_OWN_HANDLES ||
+      '@CUETAdda247,@humanitiesadda247,@CommerceAddaclass12,@ScienceAdda247'
+    ).split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  }
+};
+
+function getNicheConfig(nicheSlug) {
+  return NICHE_CONFIGS[nicheSlug] || NICHE_CONFIGS['neet'];
+}
+
+function isOwnHandleFor(config, h) {
+  return config.ownHandles.includes((h || '').toLowerCase());
+}
 
 // ===== Helpers =====
 function parseISO8601Duration(iso) {
@@ -109,7 +147,7 @@ async function ytFetch(endpoint, params) {
   return res.json();
 }
 
-async function resolveChannelByHandle(handle) {
+async function resolveChannelByHandle(handle, isOwn = false) {
   const data = await ytFetch('channels', {
     part: 'snippet,contentDetails,statistics',
     forHandle: handle
@@ -126,7 +164,7 @@ async function resolveChannelByHandle(handle) {
     totalVideos: parseInt(ch.statistics.videoCount || 0),
     totalViews: parseInt(ch.statistics.viewCount || 0),
     uploadsPlaylistId: ch.contentDetails.relatedPlaylists.uploads,
-    isOwn: isOwnHandle(handle)
+    isOwn
   };
 }
 
@@ -367,20 +405,23 @@ export async function GET(req, { params }) {
   const pathArr = params?.path || [];
   const path = pathArr.join('/');
   const url = new URL(req.url);
+  const nicheSlug = url.searchParams.get('niche') || 'neet';
+  const cfg = getNicheConfig(nicheSlug);
+  const P = cfg.collectionPrefix; // e.g. 'neet_' or 'cuet_'
 
   try {
     const db = await getDb();
 
     if (path === '' || path === 'health') {
-      return NextResponse.json({ ok: true, service: 'yt-competitor' });
+      return NextResponse.json({ ok: true, service: 'yt-competitor', niche: nicheSlug });
     }
 
     if (path === 'dashboard') {
-      const channels = await db.collection('channels').find({}).toArray();
-      const videos = await db.collection('videos').find({}).sort({ views: -1 }).toArray();
-      const meta = await db.collection('meta').findOne({ _id: 'sync' });
-      const ideas = await db.collection('content_ideas').findOne({ _id: 'latest' });
-      const keywords = await db.collection('keywords').findOne({ _id: 'latest' });
+      const channels = await db.collection(P+'channels').find({}).toArray();
+      const videos = await db.collection(P+'videos').find({}).sort({ views: -1 }).toArray();
+      const meta = await db.collection(P+'meta').findOne({ _id: 'sync' });
+      const ideas = await db.collection(P+'content_ideas').findOne({ _id: 'latest' });
+      const keywords = await db.collection(P+'keywords').findOne({ _id: 'latest' });
 
       // Exclude own channels from "top videos of the day" (competitor focus)
       const topVideos = videos.filter(v => !v.isOwn).slice(0, 5);
@@ -404,6 +445,8 @@ export async function GET(req, { params }) {
       const topCompetitor = competitorChannels[0] || null;
 
       return NextResponse.json({
+        niche: nicheSlug,
+        nicheLabel: cfg.label,
         channels: channelStats,
         benchmark,
         ownChannels,
@@ -412,6 +455,7 @@ export async function GET(req, { params }) {
         totalVideos: videos.length,
         totalViews: videos.reduce((s, v) => s + v.views, 0),
         lastSyncAt: meta?.lastSyncAt || null,
+        syncStatus: meta?.status || 'idle',
         ideas: ideas?.ideas || [],
         ideasUpdatedAt: ideas?.updatedAt || null,
         keywords: keywords ? {
@@ -431,13 +475,13 @@ export async function GET(req, { params }) {
       const q = {};
       if (type && type !== 'all') q.type = type;
       if (channelId) q.channelId = channelId;
-      const videos = await db.collection('videos').find(q).sort({ views: -1 }).toArray();
+      const videos = await db.collection(P+'videos').find(q).sort({ views: -1 }).toArray();
       return NextResponse.json({ videos });
     }
 
     if (path.startsWith('videos/') && path.endsWith('/analysis')) {
       const videoId = path.split('/')[1];
-      const analysis = await db.collection('analyses').findOne({ videoId });
+      const analysis = await db.collection(P+'analyses').findOne({ videoId });
       return NextResponse.json({ analysis });
     }
 
@@ -451,126 +495,147 @@ export async function GET(req, { params }) {
 export async function POST(req, { params }) {
   const pathArr = params?.path || [];
   const path = pathArr.join('/');
+  const url = new URL(req.url);
+  const nicheSlug = url.searchParams.get('niche') || 'neet';
+  const cfg = getNicheConfig(nicheSlug);
+  const P = cfg.collectionPrefix;
+  const NICHE = cfg.niche;
+  const HANDLES = cfg.trackedHandles;
+  const isOwnHandle = (h) => isOwnHandleFor(cfg, h);
 
   try {
     const db = await getDb();
 
     if (path === 'sync') {
-      console.log('[sync] Starting full sync of', HANDLES.length, 'channels');
-      // Step 1: Resolve channels (cache forever in db, but always refresh isOwn flag)
-      const channels = [];
-      for (const handle of HANDLES) {
-        let ch = await db.collection('channels').findOne({ handle });
-        if (!ch) {
-          const resolved = await resolveChannelByHandle(handle);
-          if (resolved) {
-            await db.collection('channels').updateOne(
-              { handle },
-              { $set: { ...resolved, _id: resolved.channelId } },
-              { upsert: true }
-            );
-            ch = resolved;
-          } else {
-            console.log('[sync] Could not resolve', handle);
-            continue;
-          }
-        } else {
-          // Refresh isOwn flag in case OWN_HANDLES env changed
-          const flag = isOwnHandle(handle);
-          if (ch.isOwn !== flag) {
-            await db.collection('channels').updateOne({ handle }, { $set: { isOwn: flag } });
-            ch.isOwn = flag;
-          }
-        }
-        channels.push(ch);
+      const meta = await db.collection(P+'meta').findOne({ _id: 'sync' });
+      if (meta?.status === 'syncing' && meta?.startedAt && (Date.now() - new Date(meta.startedAt).getTime() < 300000)) {
+        return NextResponse.json({ success: true, message: 'Sync already in progress' });
       }
 
-      // Step 2: Fetch videos last 48hrs from each
-      let allVideos = [];
-      for (const ch of channels) {
-        try {
-          const vids = await fetchRecentVideosForChannel(ch, 48);
-          allVideos = allVideos.concat(vids);
-        } catch (e) {
-          console.error(`[sync] err for ${ch.handle}:`, e.message);
-        }
-      }
-
-      // Step 3: Replace videos collection (only keep current 48hr window)
-      await db.collection('videos').deleteMany({});
-      if (allVideos.length > 0) {
-        await db.collection('videos').insertMany(allVideos.map(v => ({ ...v, _id: v.videoId, syncedAt: new Date() })));
-      }
-
-      // Step 4: Auto-analyze top 5 videos by views (reduced to conserve free-tier quota)
-      const sorted = [...allVideos].sort((a, b) => b.views - a.views);
-      const topToAnalyze = sorted.slice(0, 5);
-      const analyses = [];
-      for (const v of topToAnalyze) {
-        const comments = await fetchTopComments(v.videoId, 30);
-        const analysis = await aiAnalyzeComments(v, comments);
-        const doc = { videoId: v.videoId, title: v.title, channelTitle: v.channelTitle, ...analysis, commentSample: comments.slice(0, 5), analyzedAt: new Date() };
-        await db.collection('analyses').updateOne({ _id: v.videoId }, { $set: doc }, { upsert: true });
-        analyses.push(doc);
-        // Delay between calls to respect free-tier rate limits
-        await new Promise(r => setTimeout(r, 3000));
-      }
-
-      // Step 5: Generate content ideas
-      const allPainPoints = analyses.flatMap(a => a.painPoints || []);
-      const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
-      const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, sorted);
-      await db.collection('content_ideas').updateOne(
-        { _id: 'latest' },
-        { $set: { ideas, updatedAt: new Date() } },
-        { upsert: true }
-      );
-
-      // Step 5b: AI Keyword Research
-      const competitorVideos = allVideos.filter(v => !v.isOwn);
-      const ownVideos = allVideos.filter(v => v.isOwn);
-      const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions);
-      await db.collection('keywords').updateOne(
-        { _id: 'latest' },
-        { $set: { ...kw, updatedAt: new Date() } },
-        { upsert: true }
-      );
-
-      // Step 6: Save meta
-      await db.collection('meta').updateOne(
+      // Set status to syncing
+      await db.collection(P+'meta').updateOne(
         { _id: 'sync' },
-        { $set: { lastSyncAt: new Date(), videosCount: allVideos.length, analyzedCount: analyses.length } },
+        { $set: { status: 'syncing', startedAt: new Date() } },
         { upsert: true }
       );
+
+      // Fire and forget background sync
+      (async () => {
+        try {
+          console.log('[sync] Starting async background sync of', HANDLES.length, 'channels for niche', nicheSlug);
+          
+          const channels = [];
+          for (const handle of HANDLES) {
+            let ch = await db.collection(P+'channels').findOne({ handle });
+            if (!ch) {
+              const resolved = await resolveChannelByHandle(handle, isOwnHandle(handle));
+              if (resolved) {
+                await db.collection(P+'channels').updateOne(
+                  { handle },
+                  { $set: { ...resolved, _id: resolved.channelId } },
+                  { upsert: true }
+                );
+                ch = resolved;
+              } else {
+                console.log('[sync] Could not resolve', handle);
+                continue;
+              }
+            } else {
+              const flag = isOwnHandle(handle);
+              if (ch.isOwn !== flag) {
+                await db.collection(P+'channels').updateOne({ handle }, { $set: { isOwn: flag } });
+                ch.isOwn = flag;
+              }
+            }
+            channels.push(ch);
+          }
+
+          let allVideos = [];
+          for (const ch of channels) {
+            try {
+              const vids = await fetchRecentVideosForChannel(ch, 48);
+              allVideos = allVideos.concat(vids);
+            } catch (e) {
+              console.error(`[sync] err for ${ch.handle}:`, e.message);
+            }
+          }
+
+          await db.collection(P+'videos').deleteMany({});
+          if (allVideos.length > 0) {
+            await db.collection(P+'videos').insertMany(allVideos.map(v => ({ ...v, _id: v.videoId, syncedAt: new Date() })));
+          }
+
+          const sorted = [...allVideos].sort((a, b) => b.views - a.views);
+          const topToAnalyze = sorted.slice(0, 5);
+          const analyses = [];
+          for (const v of topToAnalyze) {
+            const comments = await fetchTopComments(v.videoId, 30);
+            const analysis = await aiAnalyzeComments(v, comments);
+            const doc = { videoId: v.videoId, title: v.title, channelTitle: v.channelTitle, ...analysis, commentSample: comments.slice(0, 5), analyzedAt: new Date() };
+            await db.collection(P+'analyses').updateOne({ _id: v.videoId }, { $set: doc }, { upsert: true });
+            analyses.push(doc);
+            await new Promise(r => setTimeout(r, 3000));
+          }
+
+          const allPainPoints = analyses.flatMap(a => a.painPoints || []);
+          const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
+          const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, sorted);
+          await db.collection(P+'content_ideas').updateOne(
+            { _id: 'latest' },
+            { $set: { ideas, updatedAt: new Date() } },
+            { upsert: true }
+          );
+
+          const competitorVideos = allVideos.filter(v => !v.isOwn);
+          const ownVideos = allVideos.filter(v => v.isOwn);
+          const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions);
+          await db.collection(P+'keywords').updateOne(
+            { _id: 'latest' },
+            { $set: { ...kw, updatedAt: new Date() } },
+            { upsert: true }
+          );
+
+          // Save completed metadata
+          await db.collection(P+'meta').updateOne(
+            { _id: 'sync' },
+            { $set: { status: 'idle', lastSyncAt: new Date(), videosCount: allVideos.length, analyzedCount: analyses.length } },
+            { upsert: true }
+          );
+          console.log('[sync] Async background sync completed successfully for niche', nicheSlug);
+        } catch (err) {
+          console.error('[sync] Async background sync failed:', err);
+          await db.collection(P+'meta').updateOne(
+            { _id: 'sync' },
+            { $set: { status: 'idle', error: err.message, failedAt: new Date() } },
+            { upsert: true }
+          );
+        }
+      })();
 
       return NextResponse.json({
         success: true,
-        channelsResolved: channels.length,
-        videosFound: allVideos.length,
-        analyzed: analyses.length,
-        ideasGenerated: ideas.length,
-        keywordsGenerated: (kw.trending?.length || 0) + (kw.opportunity?.length || 0) + (kw.painPointKeywords?.length || 0) + (kw.longTail?.length || 0)
+        message: 'Sync initiated in the background'
       });
     }
 
     if (path.startsWith('videos/') && path.endsWith('/analyze')) {
       const videoId = path.split('/')[1];
-      const video = await db.collection('videos').findOne({ videoId });
+      const video = await db.collection(P+'videos').findOne({ videoId });
       if (!video) return NextResponse.json({ error: 'Video not found' }, { status: 404 });
       const comments = await fetchTopComments(videoId, 30);
       const analysis = await aiAnalyzeComments(video, comments);
       const doc = { videoId, title: video.title, channelTitle: video.channelTitle, ...analysis, commentSample: comments.slice(0, 5), analyzedAt: new Date() };
-      await db.collection('analyses').updateOne({ _id: videoId }, { $set: doc }, { upsert: true });
+      await db.collection(P+'analyses').updateOne({ _id: videoId }, { $set: doc }, { upsert: true });
       return NextResponse.json({ analysis: doc });
     }
 
     if (path === 'ideas/regenerate') {
-      const analyses = await db.collection('analyses').find({}).toArray();
-      const videos = await db.collection('videos').find({}).sort({ views: -1 }).toArray();
+      const analyses = await db.collection(P+'analyses').find({}).toArray();
+      const videos = await db.collection(P+'videos').find({}).sort({ views: -1 }).toArray();
       const allPainPoints = analyses.flatMap(a => a.painPoints || []);
       const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
       const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, videos);
-      await db.collection('content_ideas').updateOne(
+      await db.collection(P+'content_ideas').updateOne(
         { _id: 'latest' },
         { $set: { ideas, updatedAt: new Date() } },
         { upsert: true }
@@ -579,14 +644,14 @@ export async function POST(req, { params }) {
     }
 
     if (path === 'keywords/regenerate') {
-      const analyses = await db.collection('analyses').find({}).toArray();
-      const videos = await db.collection('videos').find({}).sort({ views: -1 }).toArray();
+      const analyses = await db.collection(P+'analyses').find({}).toArray();
+      const videos = await db.collection(P+'videos').find({}).sort({ views: -1 }).toArray();
       const competitorVideos = videos.filter(v => !v.isOwn);
       const ownVideos = videos.filter(v => v.isOwn);
       const allPainPoints = analyses.flatMap(a => a.painPoints || []);
       const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
       const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions);
-      await db.collection('keywords').updateOne(
+      await db.collection(P+'keywords').updateOne(
         { _id: 'latest' },
         { $set: { ...kw, updatedAt: new Date() } },
         { upsert: true }
@@ -595,7 +660,7 @@ export async function POST(req, { params }) {
     }
 
     if (path === 'keywords/enrich') {
-      const kw = await db.collection('keywords').findOne({ _id: 'latest' });
+      const kw = await db.collection(P+'keywords').findOne({ _id: 'latest' });
       if (!kw) return NextResponse.json({ error: 'No keywords found. Run Sync first.' }, { status: 400 });
       console.log('[enrich] Fetching YouTube metrics for keywords...');
       const t0 = Date.now();
@@ -606,7 +671,7 @@ export async function POST(req, { params }) {
         enrichKeywordsList(kw.longTail || [], 6)
       ]);
       const enrichedAt = new Date();
-      await db.collection('keywords').updateOne(
+      await db.collection(P+'keywords').updateOne(
         { _id: 'latest' },
         { $set: { trending, opportunity, painPointKeywords, longTail, enrichedAt } }
       );
