@@ -265,7 +265,8 @@ async function enrichKeywordsList(keywords, limit) {
   return [...enriched, ...keywords.slice(limit)];
 }
 
-async function fetchTopComments(videoId, max = 30) {  try {
+async function fetchTopComments(videoId, max = 30) {
+  try {
     const data = await ytFetch('commentThreads', {
       part: 'snippet',
       videoId,
@@ -284,15 +285,15 @@ async function fetchTopComments(videoId, max = 30) {  try {
   }
 }
 
-async function aiAnalyzeComments(video, comments) {
+async function aiAnalyzeComments(video, comments, nicheStr = 'Medical/Engineering Exam Counselling') {
   if (!comments || comments.length === 0) {
     return {
       positivePct: 0, negativePct: 0, neutralPct: 0,
       discussionPoints: [], painPoints: [], summary: 'No comments available'
     };
   }
-  const commentText = comments.slice(0, 30).map((c, i) => `${i+1}. (${c.likes} likes) ${c.text.substring(0, 250)}`).join('\n');
-  const messages = [{ role: 'system', content: 'You are an expert at analyzing audience sentiment from YouTube comments. Return only valid JSON.' }, { role: 'user', content: `You are analyzing YouTube comments for a video in the NEET/medical counselling niche in India.\n\nVideo Title: ${video.title}\nNiche: ${NICHE}\n\nComments:\n${commentText}\n\nAnalyze these comments and return JSON with:\n- positivePct: integer 0-100 (percent of positive sentiment comments)\n- negativePct: integer 0-100\n- neutralPct: integer 0-100 (the three should sum to 100)\n- discussionPoints: array of 3-5 short strings — top topics audience is discussing\n- painPoints: array of 3-5 short strings — specific frustrations, confusions or pain points students are expressing (especially around NEET/counselling/admission/colleges/cutoffs)\n- summary: 1-sentence overall vibe of comments` }];
+  const commentText = comments.slice(0, 30).map((c, i) => `${i + 1}. (${c.likes} likes) ${c.text.substring(0, 250)}`).join('\n');
+  const messages = [{ role: 'system', content: 'You are an expert at analyzing audience sentiment from YouTube comments. Return only valid JSON.' }, { role: 'user', content: `You are analyzing YouTube comments for a video in the NEET/CUET/medical/college admission counselling niche in India.\n\nVideo Title: ${video.title}\nNiche: ${nicheStr}\n\nComments:\n${commentText}\n\nAnalyze these comments and return JSON with:\n- positivePct: integer 0-100 (percent of positive sentiment comments)\n- negativePct: integer 0-100\n- neutralPct: integer 0-100 (the three should sum to 100)\n- discussionPoints: array of 3-5 short strings — top topics audience is discussing\n- painPoints: array of 3-5 short strings — specific frustrations, confusions or pain points students are expressing (especially around NEET/counselling/admission/colleges/cutoffs)\n- summary: 1-sentence overall vibe of comments` }];
 
   try {
     const respContent = await geminiChat(messages);
@@ -313,16 +314,16 @@ async function aiAnalyzeComments(video, comments) {
       positivePct: 60,
       negativePct: 20,
       neutralPct: 20,
-      discussionPoints: ['NEET preparation', 'College selection', 'Exam strategies', 'Counselling process'],
+      discussionPoints: ['preparation', 'College selection', 'Exam strategies', 'Counselling process'],
       painPoints: ['Confusion about cutoffs', 'College fee concerns', 'Seat availability', 'Counselling rounds'],
-      summary: `Audience engaged with "${video.title}" — students seeking guidance on NEET and admissions.`
+      summary: `Audience engaged with "${video.title}" — students seeking guidance on admissions.`
     };
   }
 }
 
-async function aiGenerateContentIdeas(aggregatedPainPoints, aggregatedDiscussions, topVideos) {
+async function aiGenerateContentIdeas(aggregatedPainPoints, aggregatedDiscussions, topVideos, nicheStr = 'Medical/Engineering Exam Counselling') {
   const topTitles = topVideos.slice(0, 10).map(v => `- "${v.title}" (${v.views} views, ${v.channelTitle})`).join('\n');
-  const messages = [{ role: 'system', content: 'You are a top YouTube content strategist for Indian education niche. Return only valid JSON.' }, { role: 'user', content: `You are a YouTube content strategist for a channel focused on: ${NICHE}.\n\nCompetitor analysis of last 48 hours:\n\nTop performing competitor videos:\n${topTitles}\n\nWhat students are discussing:\n${aggregatedDiscussions.slice(0, 20).map(p => '- ' + p).join('\n')}\n\nStudent pain points / frustrations found in comments:\n${aggregatedPainPoints.slice(0, 20).map(p => '- ' + p).join('\n')}\n\nGenerate 8 specific, click-worthy YouTube content ideas for OUR channel that address these pain points and capitalize on trending topics. Return JSON: { ideas: [{ title, hook, whyItWorks, targetKeyword }] }\n- title: punchy video title (max 70 chars, Hindi/English mix is fine)\n- hook: 1-line opening hook for the video\n- whyItWorks: why this will perform (1 sentence referencing pain point or trend)\n- targetKeyword: main keyword for SEO` }];
+  const messages = [{ role: 'system', content: 'You are a top YouTube content strategist for Indian education niche. Return only valid JSON.' }, { role: 'user', content: `You are a YouTube content strategist for a channel focused on: ${nicheStr}.\n\nCompetitor analysis of last 48 hours:\n\nTop performing competitor videos:\n${topTitles}\n\nWhat students are discussing:\n${aggregatedDiscussions.slice(0, 20).map(p => '- ' + p).join('\n')}\n\nStudent pain points / frustrations found in comments:\n${aggregatedPainPoints.slice(0, 20).map(p => '- ' + p).join('\n')}\n\nGenerate 8 specific, click-worthy YouTube content ideas for OUR channel that address these pain points and capitalize on trending topics. Return JSON: { ideas: [{ title, hook, whyItWorks, targetKeyword }] }\n- title: punchy video title (max 70 chars, Hindi/English mix is fine)\n- hook: 1-line opening hook for the video\n- whyItWorks: why this will perform (1 sentence referencing pain point or trend)\n- targetKeyword: main keyword for SEO` }];
 
   try {
     const respContent = await geminiChat(messages, 0.7);
@@ -347,13 +348,13 @@ async function aiGenerateContentIdeas(aggregatedPainPoints, aggregatedDiscussion
   }
 }
 
-async function aiKeywordResearch(competitorVideos, ownVideos, painPoints, discussions) {
+async function aiKeywordResearch(competitorVideos, ownVideos, painPoints, discussions, nicheStr = 'Medical/Engineering Exam Counselling') {
   const compTitles = competitorVideos.slice(0, 25).map(v => `- "${v.title}" (${v.views} views) [${v.channelTitle}]`).join('\n');
   const ourTitles = ownVideos.length > 0
     ? ownVideos.slice(0, 15).map(v => `- "${v.title}" (${v.views} views)`).join('\n')
     : '(No videos from our channel in last 48h)';
 
-  const messages = [{ role: 'system', content: 'You are a YouTube SEO and keyword research expert specializing in Indian medical education. Return only valid JSON matching the exact schema requested.' }, { role: 'user', content: `You are a YouTube SEO + keyword research expert for the Indian education niche.\n\nOUR NICHE: ${NICHE}\n\nCOMPETITOR VIDEOS (last 48h):\n${compTitles}\n\nOUR VIDEOS (last 48h):\n${ourTitles}\n\nWhat students are discussing in comments:\n${discussions.slice(0, 25).map(p => '- ' + p).join('\n')}\n\nStudent pain points (from comments):\n${painPoints.slice(0, 25).map(p => '- ' + p).join('\n')}\n\nDo a comprehensive keyword analysis. Return JSON with this exact structure:\n{\n  "trending": [ { "keyword": "...", "frequency": <int 1-10 popularity score>, "intent": "informational|transactional|navigational", "whyHot": "<1-line reason>" } ],\n  "opportunity": [ { "keyword": "...", "gap": "<short reason competitors cover this but we don't or weakly do>", "videoAngle": "<suggested video angle for our channel>", "priority": "high|medium|low" } ],\n  "painPointKeywords": [ { "keyword": "<long-tail search query students would actually type>", "studentNeed": "<what they want>", "videoAngle": "<our video idea>" } ],\n  "longTail": [ { "keyword": "<5-8 word long-tail query>", "searchIntent": "<short>" } ]\n}\n\nRules:\n- trending: 8-10 keywords from competitor titles + discussions (most repeated themes)\n- opportunity: 6-8 keywords where competitors are winning but our channel is weak/absent (be honest about gaps)\n- painPointKeywords: 6-8 long-tail keywords directly from student pain points (e.g. "MBBS Karnataka private college fees 2025")\n- longTail: 6-8 specific long-tail queries with clear search intent\n- Use Hindi/English mix where natural (e.g. "NEET counselling kaise hota hai")\n- All keywords must be REAL search queries students would type, not generic terms\n- Be specific: include years (2025), states, colleges, exam names when relevant` }];
+  const messages = [{ role: 'system', content: 'You are a YouTube SEO and keyword research expert specializing in Indian medical/college admission education. Return only valid JSON matching the exact schema requested.' }, { role: 'user', content: `You are a YouTube SEO + keyword research expert for the Indian education niche.\n\nOUR NICHE: ${nicheStr}\n\nCOMPETITOR VIDEOS (last 48h):\n${compTitles}\n\nOUR VIDEOS (last 48h):\n${ourTitles}\n\nWhat students are discussing in comments:\n${discussions.slice(0, 25).map(p => '- ' + p).join('\n')}\n\nStudent pain points (from comments):\n${painPoints.slice(0, 25).map(p => '- ' + p).join('\n')}\n\nDo a comprehensive keyword analysis. Return JSON with this exact structure:\n{\n  "trending": [ { "keyword": "...", "frequency": <int 1-10 popularity score>, "intent": "informational|transactional|navigational", "whyHot": "<1-line reason>" } ],\n  "opportunity": [ { "keyword": "...", "gap": "<short reason competitors cover this but we don't or weakly do>", "videoAngle": "<suggested video angle for our channel>", "priority": "high|medium|low" } ],\n  "painPointKeywords": [ { "keyword": "<long-tail search query students would actually type>", "studentNeed": "<what they want>", "videoAngle": "<our video idea>" } ],\n  "longTail": [ { "keyword": "<5-8 word long-tail query>", "searchIntent": "<short>" } ]\n}\n\nRules:\n- trending: 8-10 keywords from competitor titles + discussions (most repeated themes)\n- opportunity: 6-8 keywords where competitors are winning but our channel is weak/absent (be honest about gaps)\n- painPointKeywords: 6-8 long-tail keywords directly from student pain points (e.g. "MBBS Karnataka private college fees 2025")\n- longTail: 6-8 specific long-tail queries with clear search intent\n- Use Hindi/English mix where natural (e.g. "NEET counselling kaise hota hai")\n- All keywords must be REAL search queries students would type, not generic terms\n- Be specific: include years (2025), states, colleges, exam names when relevant` }];
 
   try {
     const respContent = await geminiChat(messages, 0.5);
@@ -417,11 +418,11 @@ export async function GET(req, { params }) {
     }
 
     if (path === 'dashboard') {
-      const channels = await db.collection(P+'channels').find({}).toArray();
-      const videos = await db.collection(P+'videos').find({}).sort({ views: -1 }).toArray();
-      const meta = await db.collection(P+'meta').findOne({ _id: 'sync' });
-      const ideas = await db.collection(P+'content_ideas').findOne({ _id: 'latest' });
-      const keywords = await db.collection(P+'keywords').findOne({ _id: 'latest' });
+      const channels = await db.collection(P + 'channels').find({}).toArray();
+      const videos = await db.collection(P + 'videos').find({}).sort({ views: -1 }).toArray();
+      const meta = await db.collection(P + 'meta').findOne({ _id: 'sync' });
+      const ideas = await db.collection(P + 'content_ideas').findOne({ _id: 'latest' });
+      const keywords = await db.collection(P + 'keywords').findOne({ _id: 'latest' });
 
       // Exclude own channels from "top videos of the day" (competitor focus)
       const topVideos = videos.filter(v => !v.isOwn).slice(0, 5);
@@ -475,13 +476,13 @@ export async function GET(req, { params }) {
       const q = {};
       if (type && type !== 'all') q.type = type;
       if (channelId) q.channelId = channelId;
-      const videos = await db.collection(P+'videos').find(q).sort({ views: -1 }).toArray();
+      const videos = await db.collection(P + 'videos').find(q).sort({ views: -1 }).toArray();
       return NextResponse.json({ videos });
     }
 
     if (path.startsWith('videos/') && path.endsWith('/analysis')) {
       const videoId = path.split('/')[1];
-      const analysis = await db.collection(P+'analyses').findOne({ videoId });
+      const analysis = await db.collection(P + 'analyses').findOne({ videoId });
       return NextResponse.json({ analysis });
     }
 
@@ -507,13 +508,13 @@ export async function POST(req, { params }) {
     const db = await getDb();
 
     if (path === 'sync') {
-      const meta = await db.collection(P+'meta').findOne({ _id: 'sync' });
+      const meta = await db.collection(P + 'meta').findOne({ _id: 'sync' });
       if (meta?.status === 'syncing' && meta?.startedAt && (Date.now() - new Date(meta.startedAt).getTime() < 300000)) {
         return NextResponse.json({ success: true, message: 'Sync already in progress' });
       }
 
       // Set status to syncing
-      await db.collection(P+'meta').updateOne(
+      await db.collection(P + 'meta').updateOne(
         { _id: 'sync' },
         { $set: { status: 'syncing', startedAt: new Date() } },
         { upsert: true }
@@ -523,14 +524,14 @@ export async function POST(req, { params }) {
       (async () => {
         try {
           console.log('[sync] Starting async background sync of', HANDLES.length, 'channels for niche', nicheSlug);
-          
+
           const channels = [];
           for (const handle of HANDLES) {
-            let ch = await db.collection(P+'channels').findOne({ handle });
+            let ch = await db.collection(P + 'channels').findOne({ handle });
             if (!ch) {
               const resolved = await resolveChannelByHandle(handle, isOwnHandle(handle));
               if (resolved) {
-                await db.collection(P+'channels').updateOne(
+                await db.collection(P + 'channels').updateOne(
                   { handle },
                   { $set: { ...resolved, _id: resolved.channelId } },
                   { upsert: true }
@@ -543,7 +544,7 @@ export async function POST(req, { params }) {
             } else {
               const flag = isOwnHandle(handle);
               if (ch.isOwn !== flag) {
-                await db.collection(P+'channels').updateOne({ handle }, { $set: { isOwn: flag } });
+                await db.collection(P + 'channels').updateOne({ handle }, { $set: { isOwn: flag } });
                 ch.isOwn = flag;
               }
             }
@@ -560,9 +561,9 @@ export async function POST(req, { params }) {
             }
           }
 
-          await db.collection(P+'videos').deleteMany({});
+          await db.collection(P + 'videos').deleteMany({});
           if (allVideos.length > 0) {
-            await db.collection(P+'videos').insertMany(allVideos.map(v => ({ ...v, _id: v.videoId, syncedAt: new Date() })));
+            await db.collection(P + 'videos').insertMany(allVideos.map(v => ({ ...v, _id: v.videoId, syncedAt: new Date() })));
           }
 
           const sorted = [...allVideos].sort((a, b) => b.views - a.views);
@@ -570,17 +571,17 @@ export async function POST(req, { params }) {
           const analyses = [];
           for (const v of topToAnalyze) {
             const comments = await fetchTopComments(v.videoId, 30);
-            const analysis = await aiAnalyzeComments(v, comments);
+            const analysis = await aiAnalyzeComments(v, comments, NICHE);
             const doc = { videoId: v.videoId, title: v.title, channelTitle: v.channelTitle, ...analysis, commentSample: comments.slice(0, 5), analyzedAt: new Date() };
-            await db.collection(P+'analyses').updateOne({ _id: v.videoId }, { $set: doc }, { upsert: true });
+            await db.collection(P + 'analyses').updateOne({ _id: v.videoId }, { $set: doc }, { upsert: true });
             analyses.push(doc);
             await new Promise(r => setTimeout(r, 3000));
           }
 
           const allPainPoints = analyses.flatMap(a => a.painPoints || []);
           const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
-          const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, sorted);
-          await db.collection(P+'content_ideas').updateOne(
+          const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, sorted, NICHE);
+          await db.collection(P + 'content_ideas').updateOne(
             { _id: 'latest' },
             { $set: { ideas, updatedAt: new Date() } },
             { upsert: true }
@@ -588,15 +589,15 @@ export async function POST(req, { params }) {
 
           const competitorVideos = allVideos.filter(v => !v.isOwn);
           const ownVideos = allVideos.filter(v => v.isOwn);
-          const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions);
-          await db.collection(P+'keywords').updateOne(
+          const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions, NICHE);
+          await db.collection(P + 'keywords').updateOne(
             { _id: 'latest' },
             { $set: { ...kw, updatedAt: new Date() } },
             { upsert: true }
           );
 
           // Save completed metadata
-          await db.collection(P+'meta').updateOne(
+          await db.collection(P + 'meta').updateOne(
             { _id: 'sync' },
             { $set: { status: 'idle', lastSyncAt: new Date(), videosCount: allVideos.length, analyzedCount: analyses.length } },
             { upsert: true }
@@ -604,7 +605,7 @@ export async function POST(req, { params }) {
           console.log('[sync] Async background sync completed successfully for niche', nicheSlug);
         } catch (err) {
           console.error('[sync] Async background sync failed:', err);
-          await db.collection(P+'meta').updateOne(
+          await db.collection(P + 'meta').updateOne(
             { _id: 'sync' },
             { $set: { status: 'idle', error: err.message, failedAt: new Date() } },
             { upsert: true }
@@ -620,22 +621,22 @@ export async function POST(req, { params }) {
 
     if (path.startsWith('videos/') && path.endsWith('/analyze')) {
       const videoId = path.split('/')[1];
-      const video = await db.collection(P+'videos').findOne({ videoId });
+      const video = await db.collection(P + 'videos').findOne({ videoId });
       if (!video) return NextResponse.json({ error: 'Video not found' }, { status: 404 });
       const comments = await fetchTopComments(videoId, 30);
-      const analysis = await aiAnalyzeComments(video, comments);
+      const analysis = await aiAnalyzeComments(video, comments, NICHE);
       const doc = { videoId, title: video.title, channelTitle: video.channelTitle, ...analysis, commentSample: comments.slice(0, 5), analyzedAt: new Date() };
-      await db.collection(P+'analyses').updateOne({ _id: videoId }, { $set: doc }, { upsert: true });
+      await db.collection(P + 'analyses').updateOne({ _id: videoId }, { $set: doc }, { upsert: true });
       return NextResponse.json({ analysis: doc });
     }
 
     if (path === 'ideas/regenerate') {
-      const analyses = await db.collection(P+'analyses').find({}).toArray();
-      const videos = await db.collection(P+'videos').find({}).sort({ views: -1 }).toArray();
+      const analyses = await db.collection(P + 'analyses').find({}).toArray();
+      const videos = await db.collection(P + 'videos').find({}).sort({ views: -1 }).toArray();
       const allPainPoints = analyses.flatMap(a => a.painPoints || []);
       const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
-      const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, videos);
-      await db.collection(P+'content_ideas').updateOne(
+      const ideas = await aiGenerateContentIdeas(allPainPoints, allDiscussions, videos, NICHE);
+      await db.collection(P + 'content_ideas').updateOne(
         { _id: 'latest' },
         { $set: { ideas, updatedAt: new Date() } },
         { upsert: true }
@@ -644,14 +645,14 @@ export async function POST(req, { params }) {
     }
 
     if (path === 'keywords/regenerate') {
-      const analyses = await db.collection(P+'analyses').find({}).toArray();
-      const videos = await db.collection(P+'videos').find({}).sort({ views: -1 }).toArray();
+      const analyses = await db.collection(P + 'analyses').find({}).toArray();
+      const videos = await db.collection(P + 'videos').find({}).sort({ views: -1 }).toArray();
       const competitorVideos = videos.filter(v => !v.isOwn);
       const ownVideos = videos.filter(v => v.isOwn);
       const allPainPoints = analyses.flatMap(a => a.painPoints || []);
       const allDiscussions = analyses.flatMap(a => a.discussionPoints || []);
-      const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions);
-      await db.collection(P+'keywords').updateOne(
+      const kw = await aiKeywordResearch(competitorVideos, ownVideos, allPainPoints, allDiscussions, NICHE);
+      await db.collection(P + 'keywords').updateOne(
         { _id: 'latest' },
         { $set: { ...kw, updatedAt: new Date() } },
         { upsert: true }
@@ -660,7 +661,7 @@ export async function POST(req, { params }) {
     }
 
     if (path === 'keywords/enrich') {
-      const kw = await db.collection(P+'keywords').findOne({ _id: 'latest' });
+      const kw = await db.collection(P + 'keywords').findOne({ _id: 'latest' });
       if (!kw) return NextResponse.json({ error: 'No keywords found. Run Sync first.' }, { status: 400 });
       console.log('[enrich] Fetching YouTube metrics for keywords...');
       const t0 = Date.now();
@@ -671,12 +672,12 @@ export async function POST(req, { params }) {
         enrichKeywordsList(kw.longTail || [], 6)
       ]);
       const enrichedAt = new Date();
-      await db.collection(P+'keywords').updateOne(
+      await db.collection(P + 'keywords').updateOne(
         { _id: 'latest' },
         { $set: { trending, opportunity, painPointKeywords, longTail, enrichedAt } }
       );
       const totalEnriched = [trending, opportunity, painPointKeywords, longTail].flat().filter(k => k.metrics).length;
-      console.log(`[enrich] done in ${(Date.now()-t0)/1000}s, enriched ${totalEnriched} keywords`);
+      console.log(`[enrich] done in ${(Date.now() - t0) / 1000}s, enriched ${totalEnriched} keywords`);
       return NextResponse.json({ success: true, enriched: totalEnriched, durationMs: Date.now() - t0 });
     }
 
