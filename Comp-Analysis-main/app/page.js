@@ -332,7 +332,18 @@ export default function App() {
               <p className={`text-[10px] mt-1 font-medium ${nicheConfig.accent}`}>{nicheConfig.desc} • IN</p>
             </div>
           )}
-          <div className="text-[10px] text-zinc-600 text-center">v1.3.0 • Tool Created by Puneet Kumar (<a href="https://wa.me/puneet.kumar" target="_blank" rel="noopener noreferrer" className="text-teal-500 hover:underline">Contact Me</a>)</div>
+          <div className="text-[10px] text-zinc-600 text-center">
+  <div>v1.3.0 • Tool Created by Puneet Kumar</div>
+
+  <a
+    href="https://wa.me/918979497220"
+    target="_blank"
+    rel="noopener noreferrer"
+    className="inline-block mt-2 px-3 py-1 text-xs font-medium rounded-md bg-teal-500 text-black hover:bg-teal-400 transition"
+  >
+    Contact Me
+  </a>
+</div>
 </div>
 </aside>
 
