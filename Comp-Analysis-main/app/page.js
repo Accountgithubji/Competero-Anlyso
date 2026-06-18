@@ -336,7 +336,7 @@ export default function App() {
   <div>v1.3.0 • Tool Created by Puneet Kumar</div>
 
   <a
-    href="https://wa.me/918979497220"
+    href="https://wa.me/puneet.kumar"
     target="_blank"
     rel="noopener noreferrer"
     className="inline-block mt-2 px-3 py-1 text-xs font-medium rounded-md bg-teal-500 text-black hover:bg-teal-400 transition"
