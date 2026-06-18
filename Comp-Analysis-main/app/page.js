@@ -332,8 +332,9 @@ export default function App() {
               <p className={`text-[10px] mt-1 font-medium ${nicheConfig.accent}`}>{nicheConfig.desc} • IN</p>
             </div>
           )}
-          <div className="text-[10px] text-zinc-600 text-center">v1.3.0 • Tool Created by Puneet Kumar (<a href="https://wa.me/puneet.kumar" target="_blank" rel="noopener noreferrer" className="text-teal-500 hover:underline">Contact Me</a>)</div>
-      </aside>
+          <div className="text-[10px] text-zinc-600 text-center">v1.3.0 • Tool Created by Puneet Kumar (<a href="https://wa.me/919876543210" target="_blank" rel="noopener noreferrer" className="text-teal-500 hover:underline">Contact Me</a>)</div>
+</div>
+</aside>
 
       {/* Header - Mobile Layout */}
       <header className="md:hidden flex items-center justify-between border-b border-zinc-900 bg-zinc-950/85 backdrop-blur-xl px-4 py-3 sticky top-0 z-40">
